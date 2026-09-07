@@ -6,9 +6,11 @@ are individually plausible and collectively impossible. So the trajectory must b
 FROM the persona (velocity, curvature, overshoot, tremor all vary per identity), not applied
 uniformly on top of it.
 
-Emitted points are fractional on purpose. Integer-only coordinates are a tell: real pointer
-hardware reports sub-pixel deltas, and a path that lands on whole numbers every sample did
-not come from a hand.
+Emitted points are fractional on purpose, but be precise about why. `clientX`/`clientY` are
+integers, so a page cannot observe the fraction directly — verified by driving Camoufox and
+reading the events back. What fractional arithmetic buys is the SEQUENCE of integers the
+rounding produces: a path computed in floats and rounded lands on a different, less regular
+set of pixels than one computed in integer steps.
 """
 from __future__ import annotations
 

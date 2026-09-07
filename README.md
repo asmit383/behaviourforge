@@ -163,6 +163,25 @@ essentially all its spread and `tempo_theta` (0.14) keeps ~38% of it.
 - **Trial-to-trial jitter on movement time** (`±10%`), and the default notch count when a
   caller does not say how far to scroll — a usage default, not a human parameter.
 
+### Known gap: autocorrelation on real text
+
+Measured by capturing what a real browser actually receives (`examples/demo_capture.py`):
+
+| | lag-1 autocorrelation of flight times |
+|---|---|
+| real Aalto humans, real sentences | **+0.058** |
+| this model, real text | −0.004 |
+| this model, one repeated character | +0.038 |
+| captured through Camoufox + Playwright | −0.109 |
+
+Two separate problems. **The model under-produces autocorrelation on real text**: digraph
+variation dilutes the tempo signal to roughly zero, while real humans keep it positive under
+the same conditions. **And the driver drags it further negative**: absolute scheduling fixes
+the mean but actively corrects each IPC jitter, and correcting a deviation shortens the next
+gap, which manufactures negative lag-1 correlation. Relative scheduling avoids that but
+inflates the mean by 69% instead (see `_Clock` in `examples/camoufox_driver.py`). Neither is
+free, and this is currently the weakest measured claim in the library.
+
 ---
 
 ## What the data corrected
@@ -361,3 +380,15 @@ only extracted per-participant parameter vectors (medians, log-spreads, correlat
 Aalto and Balabit are both research-oriented releases. Verify your rights before
 redistributing the derived corpora commercially, or rebuild them yourself from the sources —
 the extraction pipelines are in `corpus.py` for exactly that reason.
+
+## Demos
+
+```bash
+python examples/demo_capture.py            # drive a real browser, measure what the page got
+python examples/demo_store.py --headful    # log in, browse, scroll, add to cart
+```
+
+`examples/camoufox_driver.py` is the ~90-line executor. Two things it encodes that are easy
+to get wrong: pass `humanize=False` to Camoufox (its own humanizer would re-curve every
+sample and reintroduce the fleet-identical signature), and schedule events against an
+absolute clock rather than sleeping between them.
