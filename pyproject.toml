@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "behaviourforge"
+version = "0.1.0"
+description = "Coherent synthetic motor identities from a seed — the behavioral BrowserForge. Browser-agnostic, zero dependencies."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Asmit Roy" }]
+keywords = ["keystroke-dynamics", "mouse-dynamics", "persona", "automation", "behavioral-biometrics"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []          # stdlib only — this is the point
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+behaviourforge = "behaviourforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["behaviourforge*"]
+
+[tool.setuptools.package-data]
+behaviourforge = ["data/*.json"]
