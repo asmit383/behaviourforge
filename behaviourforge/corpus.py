@@ -43,7 +43,7 @@ import statistics as st
 from collections import Counter
 
 from behaviourforge.keystroke import RANGES, digraph_mult
-from behaviourforge.mouse import MOUSE_RANGES, OVERSHOOT_PX
+from behaviourforge.mouse import CLICK_MAX_MS, MOUSE_RANGES, OVERSHOOT_PX
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 BUNDLED = os.path.join(_HERE, "data", "keystroke_aalto.json")
@@ -595,6 +595,7 @@ def build_from_sapimouse(zip_path: str, out_path: str, *, min_moves: int = 15) -
     from behaviourforge.mouse import FIELDS as MOUSE_FIELDS
 
     per_user: dict[str, list[dict]] = {}
+    clicks: dict[str, list[float]] = {}
     with zipfile.ZipFile(zip_path) as z:
         for name in z.namelist():
             if not name.lower().endswith(".csv"):
@@ -610,19 +611,38 @@ def build_from_sapimouse(zip_path: str, out_path: str, *, min_moves: int = 15) -
                                        float(r["y"]), r["state"]))
                     except (KeyError, ValueError, TypeError):
                         continue
+            # Button hold time, straight from the press/release pairs. This is a separate
+            # pass from the movement segmentation because a click is not a trajectory.
+            down = None
+            for t, _x, _y, state in events:
+                if state == "Pressed":
+                    down = t
+                elif state == "Released" and down is not None:
+                    held = t - down
+                    # A hold past CLICK_MAX_MS is a press-and-hold, not a click.
+                    if 10 <= held <= CLICK_MAX_MS:
+                        clicks.setdefault(user, []).append(held)
+                    down = None
+
             for pts, click_t in _segment(events):
                 f = _movement_features(pts, click_t)
                 if f:
                     per_user.setdefault(user, []).append(f)
 
     vectors, halves = [], []
-    for rows in per_user.values():
+    for user, rows in per_user.items():
         v = _mouse_vector(rows, min_moves=min_moves)
         if v is None:
             continue
+        held = clicks.get(user, [])
+        v["mouse_click_ms"] = (round(_clamp(st.median(held), *MOUSE_RANGES["mouse_click_ms"]), 4)
+                               if len(held) >= 10 else None)
         vectors.append(v)
         a = _mouse_vector(rows[0::2], min_moves=min_moves // 2)
         b = _mouse_vector(rows[1::2], min_moves=min_moves // 2)
+        if a and b and len(held) >= 20:
+            a["mouse_click_ms"] = round(st.median(held[0::2]), 4)
+            b["mouse_click_ms"] = round(st.median(held[1::2]), 4)
         if a and b:
             halves.append((a, b))
 

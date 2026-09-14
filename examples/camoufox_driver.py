@@ -101,7 +101,13 @@ class Driver:
             raise RuntimeError(f"no bounding box for {selector!r}")
         x, y = self.p.point_in(box)
         self.move_to(x, y)
-        self.page.mouse.click(x, y)
+        # Hold the button. page.mouse.click() presses and releases with no delay, which a
+        # page measures as a 0.1ms click — a duration no hand can produce, and the single
+        # loudest tell this driver had.
+        self.page.mouse.move(x, y)
+        self.page.mouse.down()
+        time.sleep(self.p.click_hold_ms() / 1000.0)
+        self.page.mouse.up()
         if self.trace:
             print(f"    clicked {selector} at ({x:.0f}, {y:.0f})")
 

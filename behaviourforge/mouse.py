@@ -39,7 +39,7 @@ class Wheel:
 
 
 FIELDS = ("mouse_speed", "mouse_curve", "mouse_overshoot", "mouse_overshoot_px",
-          "mouse_tremor", "mouse_settle_ms")
+          "mouse_tremor", "mouse_settle_ms", "mouse_click_ms")
 
 # Scroll and idle come from a different dataset (Balabit) than the pointer path (SapiMouse),
 # because SapiMouse logs no wheel events and its participants were instructed to perform as
@@ -56,10 +56,18 @@ SCROLL_RANGES: dict[str, tuple[float, float]] = {
     "idle_drift_px": (3.0, 200.0),
 }
 
-# One wheel notch in pixels. This is a browser/OS setting (typically 3 lines), NOT a property
-# of the human, so it is a constant here rather than a sampled persona parameter. Balabit logs
-# notch events without deltas, so the human part is the TIMING and the direction changes.
-PX_PER_NOTCH = 100
+# One wheel tick in pixels — a platform constant, not a human parameter (40 on macOS).
+#
+# The value matters more than it looks. `wheelDeltaY` is derived from the TICK COUNT, not from
+# `deltaY`, so a driver can only ever express whole ticks: emitting 100px reports a
+# deltaY/wheelDeltaY pair that no mouse or trackpad can generate. Distance is therefore built
+# from whole ticks rather than chosen freely.
+PX_PER_NOTCH = 40
+
+# Probability that a notch carries two ticks instead of one. A wheel spun quickly accumulates
+# more than one detent between reports, so the delta is a small multiple rather than a
+# constant — which also stops every wheel event being byte-identical.
+DOUBLE_TICK = 0.14
 
 # Bounds measured from SapiMouse (120 users), widened past the p05-p95 range to leave the
 # tails room. These replaced four hand-authored archetypes, and the data moved two of them a
@@ -77,11 +85,24 @@ MOUSE_RANGES: dict[str, tuple[float, float]] = {
     "mouse_overshoot_px": (2.0, 120.0),   # measured median 17.8px; was a guessed uniform(5,14)
     "mouse_tremor": (0.2, 5.0),
     "mouse_settle_ms": (5.0, 500.0),
+    # How long the button is held down. Measured from 34,989 SapiMouse press/release pairs:
+    # per-user medians run 70-121ms. Previously absent entirely, so the driver fired
+    # down-and-up with no hold at all and a page measured a 0.1ms click — which is not a
+    # subtle statistical tell, it is a value no hand can produce.
+    "mouse_click_ms": (20.0, 400.0),
 }
+
+# Within-person spread of click hold. Measured WITHIN each person and excluding holds past
+# 600ms, which are press-and-hold — a different motor act that inflates the spread. The pooled
+# figure across all users and all holds is 0.78, but that folds in between-person variance and
+# generated a 197ms mean click against a human 100ms. Trimmed and within-person it is 0.48,
+# and the resulting distribution lands at p50 83 / p90 162 against a human p50 100 / p90 170.
+CLICK_LOG_SD = 0.48
+CLICK_MAX_MS = 600.0
 
 # Fallback only, used when no mouse corpus is present. Centred on the SapiMouse medians so
 # the fallback is at least in the right place; the real corpus supersedes it.
-_FALLBACK = (2.74, 0.40, 0.10, 17.9, 2.03, 61.0)
+_FALLBACK = (2.74, 0.40, 0.10, 17.9, 2.03, 61.0, 87.0)
 _SCROLL_FALLBACK = (179.0, 1.24, 0.06, 780.0, 1.01, 55.8)
 
 # ── path shape, all four constants measured from SapiMouse (24,451 strokes, 120 users) ──
@@ -277,7 +298,8 @@ def scroll(motor, rng: random.Random, *, notches: int | None = None) -> list[Whe
             direction = -direction
         gap = _clamp(rng.lognormvariate(math.log(motor.scroll_gap_ms), motor.scroll_gap_sigma),
                      4, 30_000)
-        out.append(Wheel(direction * PX_PER_NOTCH, gap))
+        ticks = 2 if rng.random() < DOUBLE_TICK else 1
+        out.append(Wheel(direction * PX_PER_NOTCH * ticks, gap))
     return out
 
 

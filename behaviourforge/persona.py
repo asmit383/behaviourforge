@@ -23,6 +23,7 @@ the same one back tomorrow.
 from __future__ import annotations
 
 import random
+import math
 from dataclasses import asdict, dataclass, field
 
 from behaviourforge import corpus as _corpus
@@ -62,6 +63,7 @@ class Motor:
     mouse_overshoot_px: float   # how far past the target that correction goes
     mouse_tremor: float         # per-sample jitter amplitude, px
     mouse_settle_ms: float      # pause on arrival before acting
+    mouse_click_ms: float       # how long the button is held down
     # scroll + idle — from Balabit, which logs wheel events and captures ordinary work
     scroll_gap_ms: float        # median gap between wheel notches
     scroll_gap_sigma: float     # log-spread of that gap (the real one is bimodal)
@@ -113,6 +115,14 @@ class Persona:
     def path(self, x0: float, y0: float, x1: float, y1: float) -> list[Move]:
         """Timed pointer samples from (x0,y0) to (x1,y1)."""
         return _mouse.path(self.motor, x0, y0, x1, y1, self._mrng)
+
+    def click_hold_ms(self) -> float:
+        """How long to hold the button down for one click.
+
+        A driver that calls click() without a hold emits a 0.1ms press, which is not a subtle
+        statistical tell — it is a duration no hand can produce."""
+        return _clamp(self._mrng.lognormvariate(math.log(self.motor.mouse_click_ms),
+                                                _mouse.CLICK_LOG_SD), 15, 2000)
 
     def point_in(self, box) -> tuple[float, float]:
         """A click point inside `box` — never dead centre. Takes a dict with x/y/width/height

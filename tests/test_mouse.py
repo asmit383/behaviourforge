@@ -55,7 +55,10 @@ def test_scroll_emits_notches_at_measured_cadence():
     from behaviourforge.mouse import PX_PER_NOTCH
     w = forge(4).scroll(30)
     assert len(w) == 30
-    assert all(abs(x.dy) == PX_PER_NOTCH for x in w)
+    # Whole ticks only: wheelDeltaY derives from the tick count, so any other delta reports a
+    # pair no real device can produce.
+    assert all(abs(x.dy) % PX_PER_NOTCH == 0 for x in w)
+    assert all(abs(x.dy) >= PX_PER_NOTCH for x in w)
     assert all(4 <= x.dt_ms <= 30_000 for x in w)
 
 
