@@ -163,6 +163,39 @@ essentially all its spread and `tempo_theta` (0.14) keeps ~38% of it.
 - **Trial-to-trial jitter on movement time** (`±10%`), and the default notch count when a
   caller does not say how far to scroll — a usage default, not a human parameter.
 
+### Path shape — verified against the raw dataset
+
+Measured with one estimator applied to both sides: 24,451 SapiMouse strokes from 120 users,
+and 500 generated strokes.
+
+| metric | before | now | SapiMouse |
+|---|---|---|---|
+| peak-velocity position | 0.47 | **0.25** | 0.26 |
+| velocity peaks per stroke | 7 | **2** | 2 |
+| path/straight (p50) | 1.09 | **1.16** | 1.11 |
+| path/straight (p90) | 1.21 | **2.13** | 2.15 |
+| samples per stroke | 55 | **34** | 34 |
+| pointer sample rate | 79 Hz | **62 Hz** | 59 Hz |
+
+Four corrections, each from the data rather than from a published constant:
+
+- **Velocity peaks early, at 0.26 of the stroke.** Any symmetric easing peaks at exactly 0.50,
+  which is a fixed, checkable signature.
+- **Tremor is a correlated wander, not white noise.** This was the important one: 2.03px of
+  measured midpoint-deviation is equally true of white noise and of a smooth wobble, but white
+  noise reverses direction every sample and each reversal registers as a velocity peak. An
+  AR(1) walk keeps the measured amplitude and drops the count from 7 to 2 — no recalibration
+  needed.
+- **Directness needs a heavy tail.** Real reaches are mostly direct with a few that wander
+  (p90 2.15). A uniform bow made every stroke equally direct, which is itself the tell.
+- **Sample rate follows duration, not pixel density.** We emitted 79Hz against a real 59Hz.
+  Fixing it also cut IPC round-trips by a third.
+
+A cross-check worth recording: `agenthands` reports peak velocity at 0.40 from a smaller
+capture. Against our 24,451 strokes it is **0.26**. Both agree it is early rather than
+symmetric; the magnitude did not reproduce, so we use our own measurement. Their
+path/straight p90 of 2.13 **did** reproduce independently (we measure 2.15).
+
 ### Known gap: autocorrelation on real text
 
 Measured by capturing what a real browser actually receives (`examples/demo_capture.py`):

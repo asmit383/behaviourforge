@@ -143,3 +143,88 @@ def test_generation_inverts_extraction():
         assert 0.8 <= recovered / truth <= 1.25, (
             f"{field}: generated {truth:.3f} but re-measured {recovered:.3f} — extraction "
             f"and generation have drifted apart")
+
+
+# ── path SHAPE, measured against SapiMouse (24,451 strokes, 120 users) ────────
+# These guard the externally observable geometry of a stroke, which is what a behavioural
+# sensor reads. Every target below was measured from the raw dataset with this same estimator,
+# not taken from another library's published figure — one of those figures (peak velocity at
+# 0.40) did not reproduce against our data, which said 0.26.
+
+def _stroke_metrics(pts):
+    sp = []
+    for a, b in zip(pts, pts[1:]):
+        sp.append(math.hypot(b.x - a.x, b.y - a.y) / (a.dt_ms or 1))
+    plen = sum(math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(pts, pts[1:]))
+    straight = math.hypot(pts[-1].x - pts[0].x, pts[-1].y - pts[0].y) or 1
+    return sp, plen / straight
+
+
+def _smooth(v, k=3):
+    return [st.mean(v[max(0, i - k // 2):i + k // 2 + 1]) for i in range(len(v))] if len(v) >= k else v
+
+
+def _peaks(v, prom):
+    if len(v) < 3:
+        return 0
+    mx = max(v) or 1.0
+    n = 0
+    for i in range(1, len(v) - 1):
+        if v[i] >= v[i - 1] and v[i] >= v[i + 1]:
+            lo = min(min(v[:i] or [v[i]]), min(v[i + 1:] or [v[i]]))
+            if (v[i] - lo) / mx > prom:
+                n += 1
+    return n
+
+
+def _sample_strokes(n=500, seed=5):
+    rng = random.Random(seed)
+    out = []
+    for i in range(n):
+        p = forge(i)
+        a = (rng.uniform(0, 1200), rng.uniform(0, 700))
+        b = (rng.uniform(0, 1200), rng.uniform(0, 700))
+        pts = p.path(*a, *b)
+        if len(pts) >= 8 and math.hypot(b[0] - a[0], b[1] - a[1]) >= 40:
+            out.append(pts)
+    return out
+
+
+def test_velocity_peaks_early_not_at_the_midpoint():
+    """Any symmetric easing peaks at exactly 0.50, which is a fixed checkable signature.
+    Real strokes peak at 0.26 — the thrust is front-loaded and the tail is a slow homing."""
+    pos = []
+    for pts in _sample_strokes():
+        sp, _ = _stroke_metrics(pts)
+        if len(sp) >= 6 and max(sp) > 0:
+            pos.append(sp.index(max(sp)) / len(sp))
+    assert 0.18 <= st.median(pos) <= 0.34, f"peak velocity at {st.median(pos):.2f}, real is 0.26"
+
+
+def test_stroke_has_few_velocity_peaks():
+    """A stroke is a thrust plus a correction — about 2 peaks. Per-sample white-noise tremor
+    produced 7, because white noise reverses direction every sample and each reversal is a
+    peak. Correlated wobble keeps the measured amplitude without the spurious reversals."""
+    counts = [_peaks(_smooth(_stroke_metrics(pts)[0]), 0.15) for pts in _sample_strokes()]
+    assert st.median(counts) <= 3, f"{st.median(counts)} velocity peaks per stroke, real is 2"
+
+
+def test_stroke_directness_has_a_heavy_tail():
+    """Most reaches are nearly direct and a few wander a long way: real p50 1.11, p90 2.15.
+    A uniform bow gave p90 1.21 — every stroke equally direct, which is the synthetic tell."""
+    ratios = sorted(_stroke_metrics(pts)[1] for pts in _sample_strokes())
+    p50 = st.median(ratios)
+    p90 = ratios[min(len(ratios) - 1, int(0.9 * len(ratios)))]
+    assert 1.05 <= p50 <= 1.25, f"median path/straight {p50:.2f}, real is 1.11"
+    assert p90 >= 1.8, f"p90 path/straight {p90:.2f}, real is 2.15 — strokes are too uniform"
+
+
+def test_pointer_sample_rate_matches_real_hardware():
+    """Real pointer input arrives at ~59Hz. Over-sampling is both a tell and a cost, since
+    every sample is an IPC round-trip in the driver."""
+    hz = []
+    for pts in _sample_strokes():
+        dur = sum(m.dt_ms for m in pts[:-1])
+        if dur > 0:
+            hz.append(1000 * len(pts) / dur)
+    assert 45 <= st.median(hz) <= 80, f"{st.median(hz):.0f}Hz, real hardware is 59Hz"

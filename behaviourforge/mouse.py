@@ -84,10 +84,55 @@ MOUSE_RANGES: dict[str, tuple[float, float]] = {
 _FALLBACK = (2.74, 0.40, 0.10, 17.9, 2.03, 61.0)
 _SCROLL_FALLBACK = (179.0, 1.24, 0.06, 780.0, 1.01, 55.8)
 
-# Converts the stored (measured) tremor statistic into the per-axis sigma the path generator
-# adds: sqrt(1.5) from differencing against the neighbour midpoint, times sqrt(2*ln 2) for
-# the median of the resulting 2D Rayleigh magnitude.
-TREMOR_TO_SIGMA = math.sqrt(1.5) * math.sqrt(2 * math.log(2))
+# ── path shape, all four constants measured from SapiMouse (24,451 strokes, 120 users) ──
+#
+# Sample rate. Real pointer input arrives at ~59Hz; we were emitting 79Hz and 55 samples per
+# stroke against a real 34. Over-sampling is both a tell and a cost — each sample is an IPC
+# round-trip — so the sample count now follows from the duration instead of pixel density.
+SAMPLE_HZ = 59.0
+
+# Velocity peaks EARLY, at 0.26 of the stroke. Any symmetric easing peaks at exactly 0.50,
+# which is a fixed checkable signature. (agenthands reports 0.40 from a smaller capture; our
+# 120-user measurement says 0.26. Both agree it is early; we use our own number.) The profile
+# v(t) ~ t^a (1-t)^b peaks at a/(a+b). The measured position is of the GLOBAL maximum
+# over a two-segment stroke, so the profile's own peak sits later than the observed one.
+_VEL_A, _VEL_B = 1.6, 3.7
+
+# Human reaching is BALLISTIC-PLUS-CORRECTIONS. The opening thrust misses, and one or two
+# homing submovements close the gap. This is not cosmetic: real strokes reach a path/straight
+# ratio of 2.15 at p90 while their maximum PERPENDICULAR deviation stays at 0.37 of the
+# distance, and no single arc satisfies both. The extra length comes from backtracking, which
+# only a multi-segment stroke produces. A single bow tuned to match the p90 ratio would have
+# to bulge far past the measured deviation, trading one wrong number for another.
+_MISS_FRAC = 0.06       # median ballistic miss, as a fraction of the distance
+_MISS_LOG_SD = 0.95     # its spread
+LAT_FRAC = 0.25         # lateral component of the miss, as a fraction of it
+
+# Per-stroke directness. Measured within-person log-sd of 4*perp/dist is 1.03, and tightly
+# held across users (p10 0.87, p90 1.18), so it is a constant rather than a persona field.
+# This is what our old uniform bow got wrong: most human strokes are nearly direct and a few
+# wander a long way, giving path/straight p90 of 2.15. A uniform draw has no tail and gave
+# 1.21 — every stroke equally direct, which is exactly the synthetic signature.
+# Fitted to the measured quantiles, not assumed: real click-terminated reaches have
+# path/straight p50 1.11 and p90 2.17, with max perpendicular deviation p50 0.09 of the
+# distance. CURVE_DIV sets the centre (the round-trip requires median perp/dist == curve/4,
+# and the lateral miss and wobble also contribute perpendicular deviation, so the bow itself
+# must sit below that) and CURVE_LOG_SD sets the tail.
+CURVE_DIV = 6.0
+CURVE_LOG_SD = 2.0
+
+# Tremor is a CORRELATED wander, not white noise. This is the key correction: 2.03px of
+# measured midpoint-deviation is equally true of white noise and of a smooth wobble, but white
+# noise reverses direction every sample and manufactures a velocity peak each time. Real
+# strokes have ~2 velocity peaks; per-sample white noise gave us 7.
+TREMOR_PHI = 0.86
+
+# Midpoint deviation d_i = w_i - (w_{i-1} + w_{i+1})/2 for an AR(1) series of marginal sd s
+# has Var(d) = s^2 (1.5 - 2*phi + 0.5*phi^2); times sqrt(2 ln 2) converts the per-axis sd to
+# the median of the 2D magnitude, which is what the extractor measures. At phi=0 this reduces
+# to the previous white-noise factor, so the calibration carries over rather than being reset.
+TREMOR_TO_SIGMA = (math.sqrt(1.5 - 2 * TREMOR_PHI + 0.5 * TREMOR_PHI ** 2)
+                   * math.sqrt(2 * math.log(2)))
 
 # A movement counts as an overshoot when it travels this many pixels past its endpoint and
 # comes back. Absolute, not a fraction of distance: a corrective submovement is a fixed
@@ -96,11 +141,32 @@ TREMOR_TO_SIGMA = math.sqrt(1.5) * math.sqrt(2 * math.log(2))
 OVERSHOOT_PX = 4.0
 
 
-def _ease(t: float) -> float:
-    """Ease-in-out: speed rises then falls. The measured shape of human pointer velocity —
-    a hand accelerates off the mark and decelerates onto the target, it does not translate
-    at constant speed."""
-    return 2 * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 2 / 2
+def _profile(steps: int) -> list[float]:
+    """Cumulative displacement fractions for an asymmetric velocity profile.
+
+    Integrating v(t) = t^a (1-t)^b numerically and normalising is simpler and more obviously
+    correct than inverting a regularised incomplete beta, and `steps` never exceeds 60."""
+    v = [((i / steps) ** _VEL_A) * ((1 - i / steps) ** _VEL_B) for i in range(1, steps + 1)]
+    total = sum(v) or 1.0
+    out, acc = [], 0.0
+    for x in v:
+        acc += x / total
+        out.append(acc)
+    return out
+
+
+def _wobble(steps: int, sigma: float, rng: random.Random) -> list[float]:
+    """Correlated perpendicular jitter — a smooth wander rather than white noise.
+
+    An AR(1) walk reproduces the measured deviation amplitude with the correlation structure a
+    hand actually has, so the SapiMouse calibration carries over intact while the spurious
+    velocity reversals disappear."""
+    innov = sigma * math.sqrt(1 - TREMOR_PHI * TREMOR_PHI)
+    out, w = [], rng.gauss(0, sigma)
+    for _ in range(steps):
+        w = TREMOR_PHI * w + rng.gauss(0, innov)
+        out.append(w)
+    return out
 
 
 def path(motor, x0: float, y0: float, x1: float, y1: float,
@@ -127,36 +193,59 @@ def path(motor, x0: float, y0: float, x1: float, y1: float,
     dist = math.hypot(dx, dy)
     over = rng.random() < motor.mouse_overshoot and dist > 40
 
-    tx, ty = x1, y1
-    if over:                                # aim PAST the target, then correct back
-        # Magnitude is measured, not guessed: real corrective overshoots have a median of
-        # ~18px with a long tail, where the old uniform(5,14) topped out below the median.
+    ux, uy = dx / dist, dy / dist
+    if over:
+        # Overshoot: aim PAST the target, then correct back. Magnitude is measured — real
+        # corrective overshoots have a median of ~18px with a long tail, where the old
+        # uniform(5,14) topped out below the median.
         past = _clamp(rng.lognormvariate(math.log(motor.mouse_overshoot_px), 0.7), 2, 200)
-        tx = x1 + dx / dist * past
-        ty = y1 + dy / dist * past
+        tx, ty = x1 + ux * past, y1 + uy * past
+    else:
+        # Undershoot: the ordinary case. The thrust falls short and drifts off-axis, and a
+        # homing submovement finishes the reach.
+        miss = dist * min(rng.lognormvariate(math.log(_MISS_FRAC), _MISS_LOG_SD), 0.75)
+        lat = rng.gauss(0, miss * LAT_FRAC)
+        tx, ty = x1 - ux * miss - uy * lat, y1 - uy * miss + ux * lat
 
     pts: list[Move] = []
 
-    def seg(ax: float, ay: float, bx: float, by: float) -> None:
+    # Total duration is a property of the whole reach, not of each piece. Charging the 50ms
+    # constant once per segment inflated both the duration and the sample count — 42 samples
+    # against a real 34 — because a two-segment stroke paid it twice.
+    total_dur = motor.mouse_speed * (50 + dist * 0.34) * rng.uniform(0.9, 1.1)
+
+    def seg(ax: float, ay: float, bx: float, by: float, share: float) -> None:
         sdx, sdy = bx - ax, by - ay
         sd = math.hypot(sdx, sdy) or 1.0
         nx, ny = -sdy / sd, sdx / sd                     # perpendicular -> bow direction
-        # Bow scales with distance and nothing else. A fixed pixel ceiling here used to clip
-        # every long sweep flat: measured curve wants ~16% of the distance as perpendicular
-        # deviation, which is 200px on a 1300px move, far past any constant cap worth having.
-        bow = (rng.random() - 0.5) * sd * motor.mouse_curve
-        steps = max(8, min(60, round(sd / 9)))
-        dt = (motor.mouse_speed * (50 + sd * 0.34) * rng.uniform(0.9, 1.1)) / steps
-        for i in range(1, steps + 1):
-            t = i / steps
-            e = _ease(t)
-            arc = math.sin(t * math.pi) * bow
-            pts.append(Move(ax + sdx * e + nx * arc + rng.gauss(0, trem),
-                            ay + sdy * e + ny * arc + rng.gauss(0, trem), dt))
 
-    seg(x0, y0, tx, ty)
-    if over:
-        seg(tx, ty, x1, y1)                              # smooth correction onto the target
+        # Per-stroke bow, log-normal around the persona's own directness. The extractor takes
+        # the MEDIAN of 4*perp/dist per user, and a log-normal's median is its scale, so the
+        # calibration round-trips while the tail this adds is what produces the p90 of 2.15.
+        frac = rng.lognormvariate(math.log(max(motor.mouse_curve, 1e-3) / CURVE_DIV), CURVE_LOG_SD)
+        bow = sd * min(frac, 1.2) * (1 if rng.random() < 0.5 else -1)
+
+        # Duration first, then sample count from the real pointer rate — not from pixels.
+        dur = total_dur * share
+        steps = max(3, min(60, round(dur * SAMPLE_HZ / 1000.0)))
+        dt = dur / steps
+        disp = _profile(steps)
+        # Isotropic, not purely perpendicular: a hand's tremor has no preferred axis, and the
+        # 2-D form is what TREMOR_TO_SIGMA's Rayleigh factor assumes. Projecting one scalar
+        # onto the perpendicular made the recovered amplitude 20% low.
+        wx = _wobble(steps, trem, rng)
+        wy = _wobble(steps, trem, rng)
+        for i in range(steps):
+            e = disp[i]
+            arc = math.sin((i + 1) / steps * math.pi) * bow
+            pts.append(Move(ax + sdx * e + nx * arc + wx[i],
+                            ay + sdy * e + ny * arc + wy[i], dt))
+
+    d1 = math.hypot(tx - x0, ty - y0)
+    d2 = math.hypot(x1 - tx, y1 - ty)
+    tot = (d1 + d2) or 1.0
+    seg(x0, y0, tx, ty, d1 / tot)
+    seg(tx, ty, x1, y1, d2 / tot)        # the homing correction, always present now
 
     # Land exactly, and make the final wait the settle. Tremor on the last sample would leave
     # the pointer a pixel or two off, which on a small element is a missed click — and a hand
