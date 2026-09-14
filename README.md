@@ -196,24 +196,51 @@ capture. Against our 24,451 strokes it is **0.26**. Both agree it is early rathe
 symmetric; the magnitude did not reproduce, so we use our own measurement. Their
 path/straight p90 of 2.13 **did** reproduce independently (we measure 2.15).
 
-### Known gap: autocorrelation on real text
+### Keystroke — verified against raw Aalto
 
-Measured by capturing what a real browser actually receives (`examples/demo_capture.py`):
+Generated output against the raw dataset, same estimator, replaying the **same sentences**
+the participants typed (comparing on different text confounds the digraph sequence with the
+tempo):
 
-| | lag-1 autocorrelation of flight times |
-|---|---|
-| real Aalto humans, real sentences | **+0.058** |
-| this model, real text | −0.004 |
-| this model, one repeated character | +0.038 |
-| captured through Camoufox + Playwright | −0.109 |
+| metric | before | now | Aalto |
+|---|---|---|---|
+| flight mean / sd | 206 / 191 | **208 / 212** | 217 / 218 |
+| flight CV | 0.93 | **0.99** | 1.00 |
+| dwell mean / sd | 111 / 39 | **111 / 39** | 109 / 37 |
+| gaps over 500ms | 6.45% | **7.5%** | 7.77% |
+| lag-1 autocorrelation | −0.004 | **+0.066** | +0.056 |
 
-Two separate problems. **The model under-produces autocorrelation on real text**: digraph
-variation dilutes the tempo signal to roughly zero, while real humans keep it positive under
-the same conditions. **And the driver drags it further negative**: absolute scheduling fixes
-the mean but actively corrects each IPC jitter, and correcting a deviation shortens the next
-gap, which manufactures negative lag-1 correlation. Relative scheduling avoids that but
-inflates the mean by 69% instead (see `_Clock` in `examples/camoufox_driver.py`). Neither is
-free, and this is currently the weakest measured claim in the library.
+The autocorrelation was the real defect, and the fix is worth stating plainly because it is a
+departure from "everything measured". The corpus stores `tempo_sigma` from a single
+AR(1)-plus-noise fit, which reproduces the variance SPLIT correctly but generated −0.004
+where real participants show +0.056 on identical text. Two hypotheses were tested and both
+failed: fitting on high lags only moves theta by 9% (so it is not fast-component
+contamination), and replaying the participants' own sentences does not close it (so it is not
+a text confound). The remaining explanation is model misspecification — real typing tempo
+varies on several timescales at once, and extrapolating one exponential decay back to lag 0
+underestimates total tempo variance.
+
+So `TEMPO_SIGMA_SCALE` is calibrated against the **observable** rather than the latent
+estimate, because the observable is what a detector reads. It is the one fitted constant in
+the library, and it is named and isolated rather than folded into the corpus.
+
+### Scroll — most of the known wheel tells are Chromium-specific
+
+`agenthands` documents four wheel signatures, all measured against Chromium's
+`Input.dispatchMouseWheel`. Driving Firefox through Camoufox, three of them do not apply —
+measured, not assumed:
+
+| signature | Chromium/CDP | this library, Firefox |
+|---|---|---|
+| `wheelDeltaY`/`deltaY` ratio | any ratio; impossible pairs | **−3.00, fixed and consistent** |
+| cancelable wheel events per gesture | 199 of 199 | **0** |
+| `scrollend` events per gesture | 136 (human: 1) | **0** (human: 1) |
+| `deltaY` variance | — | **sd 0.0 — a constant 100.0** |
+
+The remaining two are ours. `deltaY` is literally constant, where a real device varies it, and
+no `scrollend` fires at all where a real gesture produces one. Neither is fixable from the
+corpora we have: Balabit logs wheel notch events without pixel deltas, so the delta
+distribution needs a probe capture of a real human scrolling rather than another dataset.
 
 ---
 

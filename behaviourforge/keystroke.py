@@ -34,6 +34,28 @@ _FINGER: dict[str, int] = {c: fid for keys, fid in _ROWS.items() for c in keys}
 
 _SHIFT_SYMBOLS = set('~!@#$%^&*()_+{}|:"<>?')
 
+# The corpus stores tempo_sigma as fitted by a single AR(1)-plus-noise decomposition, which
+# reproduces the variance SPLIT correctly but does not reproduce the OBSERVABLE it exists to
+# produce: real Aalto participants show a lag-1 autocorrelation of +0.056 on raw flight times,
+# and the fitted parameters generate -0.005 on the same sentences.
+#
+# The cause is model misspecification rather than a bad estimate. Real typing tempo varies on
+# several timescales at once — within a word, within a sentence, across a session — and
+# extrapolating one exponential decay back to lag 0 underestimates the total tempo variance.
+# Fitting on high lags only changes theta by 9%, so it is not fast-component contamination.
+#
+# A latent parameter and a measurable observable disagreed, and the observable is what a
+# detector actually reads, so this is calibrated against the observable: 1.6 reproduces
+# +0.061 against a real +0.056, on the SAME 400 Aalto sentences the participants typed.
+# (Comparing on a different text would confound the digraph sequence with the tempo, which
+# is why the benchmark replays real sentences rather than a fixed pangram.)
+TEMPO_SIGMA_SCALE = 1.6
+
+# Tempo bounds have to be wide enough for that spread. At scale 2.5 the stationary sd is
+# ~0.43, so the old [0.6, 1.7] would have clamped roughly a fifth of all draws — recreating
+# the clamp-saturation failure this project has already hit four times.
+TEMPO_MIN, TEMPO_MAX = 0.25, 3.0
+
 # Plausible bounds for each motor parameter — the single source of truth, used to clamp
 # during extraction, to clamp jitter during sampling, and to draw a field the corpus turned
 # out not to have measured. Widths matter: bounds tight enough to bite pin many personas to
@@ -129,8 +151,9 @@ class Keyboard:
         """Ornstein-Uhlenbeck: mean-reverting drift around 1.0, so consecutive keys are
         correlated in speed. This is the property that IID random delays cannot fake."""
         m = self.motor
-        self._tempo += m.tempo_theta * (1.0 - self._tempo) + m.tempo_sigma * self._rng.gauss(0, 1)
-        self._tempo = _clamp(self._tempo, 0.6, 1.7)
+        self._tempo += (m.tempo_theta * (1.0 - self._tempo)
+                        + m.tempo_sigma * TEMPO_SIGMA_SCALE * self._rng.gauss(0, 1))
+        self._tempo = _clamp(self._tempo, TEMPO_MIN, TEMPO_MAX)
         return self._tempo
 
     def _bigram_mult(self, prev: str, cur: str) -> float:
