@@ -49,7 +49,18 @@ _SHIFT_SYMBOLS = set('~!@#$%^&*()_+{}|:"<>?')
 # +0.061 against a real +0.056, on the SAME 400 Aalto sentences the participants typed.
 # (Comparing on a different text would confound the digraph sequence with the tempo, which
 # is why the benchmark replays real sentences rather than a fixed pangram.)
+#
+# TASK-DEPENDENT, and this is not a caveat to skim. Cross-dataset validation against KeyRecs
+# (99 people, disjoint from Aalto, different protocol) measures a lag-1 autocorrelation of
+# +0.001 where Aalto gives +0.056. Tempo drift is a property of CONTINUOUS typing: Aalto
+# participants transcribe whole sentences, so a rhythm builds and wanders, while a
+# fixed-phrase protocol restarts every trial and the drift never accumulates.
+#
+# 1.6 is therefore right for prose — a message, a comment, a long field — and probably too
+# high for short form entries typed one at a time. Set TEMPO_SIGMA_SCALE_FORM for those.
+# See examples/validate_crossdataset.py.
 TEMPO_SIGMA_SCALE = 1.6
+TEMPO_SIGMA_SCALE_FORM = 0.4      # short isolated fields; reproduces KeyRecs' ~0 drift
 
 # Tempo bounds have to be wide enough for that spread. At scale 2.5 the stationary sd is
 # ~0.43, so the old [0.6, 1.7] would have clamped roughly a fifth of all draws — recreating

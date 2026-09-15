@@ -25,10 +25,16 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 @dataclass(frozen=True)
 class Move:
-    """One pointer sample: move to (x, y), then wait `dt_ms` before the next."""
+    """One pointer sample: move to (x, y), then wait `dt_ms` before the next.
+
+    `coalesce` marks a sample that should be DISPATCHED without waiting for a paint, so the
+    browser merges it with its neighbours into one `pointermove` carrying the rest in
+    `getCoalescedEvents()`. `dt_ms` still holds the sample's true time — a driver pipelines the
+    flagged run and then pays back the accumulated wait, so no timing statistic changes."""
     x: float
     y: float
     dt_ms: float
+    coalesce: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,20 @@ TREMOR_PHI = 0.86
 TREMOR_TO_SIGMA = (math.sqrt(1.5 - 2 * TREMOR_PHI + 0.5 * TREMOR_PHI ** 2)
                    * math.sqrt(2 * math.log(2)))
 
+# ── coalesced pointer samples ─────────────────────────────────────────────────
+# Real input occasionally produces a `pointermove` carrying several samples, because hardware
+# reports independently of the display: when samples arrive faster than the compositor paints,
+# the browser merges them. Injected input never does this on its own — every dispatch gets its
+# own frame, so `getCoalescedEvents()` returns exactly 1 forever, which is itself the tell.
+#
+# This is derived rather than copied. Our sample rate is a measured 59Hz against a 60Hz
+# display, so samples do NOT normally outpace paints and coalescing only happens when a frame
+# is missed. A miss rate of ~1% with a 2-3 sample burst yields a mean near 1.01, which is what
+# real sessions show. Overcorrecting is its own tell: pipelining every move gives a mean near
+# 1.8, and a display dropping most of its frames is not a plausible client either.
+FRAME_DROP_CHANCE = 0.008
+FRAME_BURST = (2, 4)          # samples merged when a frame is missed
+
 # A movement counts as an overshoot when it travels this many pixels past its endpoint and
 # comes back. Absolute, not a fraction of distance: a corrective submovement is a fixed
 # 5-15px regardless of how far the reach was, so a relative threshold goes blind on long
@@ -256,11 +276,16 @@ def path(motor, x0: float, y0: float, x1: float, y1: float,
         # onto the perpendicular made the recovered amplitude 20% low.
         wx = _wobble(steps, trem, rng)
         wy = _wobble(steps, trem, rng)
+        burst = 0
         for i in range(steps):
             e = disp[i]
             arc = math.sin((i + 1) / steps * math.pi) * bow
+            if burst == 0 and i + FRAME_BURST[1] < steps and rng.random() < FRAME_DROP_CHANCE:
+                burst = rng.randint(*FRAME_BURST)      # a missed compositor frame
             pts.append(Move(ax + sdx * e + nx * arc + wx[i],
-                            ay + sdy * e + ny * arc + wy[i], dt))
+                            ay + sdy * e + ny * arc + wy[i], dt, burst > 0))
+            if burst:
+                burst -= 1
 
     d1 = math.hypot(tx - x0, ty - y0)
     d2 = math.hypot(x1 - tx, y1 - ty)

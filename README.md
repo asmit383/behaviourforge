@@ -141,6 +141,34 @@ The sampler shrinks each field's spread by `sqrt(reliability)`. Propagating the 
 manufactures diversity that isn't real; collapsing it to a constant manufactures a fleet
 signature. `base_ms` keeps essentially all of its spread; `tempo_theta` keeps ~38%.
 
+## Cross-dataset validation
+
+Every other number here compares generated output against the corpus it was fitted to, which
+proves the sampler reproduces its input and nothing more. `examples/validate_crossdataset.py`
+is the external check: fit on Aalto, test against **KeyRecs** — 99 people, different
+researchers, different protocol, no part of it used in fitting.
+
+| | KeyRecs | ours | Aalto |
+|---|---|---|---|
+| hold CV | 0.37 | **0.36** | 0.34 |
+| latency CV | 0.90 | **0.96** | 1.00 |
+| hold median | 91ms | 104ms | 104ms |
+| latency median | 170ms | 142ms | 152ms |
+| lag-1 autocorrelation | **+0.001** | +0.072 | +0.056 |
+| per-person corr(hold, latency) | **−0.163** | +0.146 | +0.16 |
+
+The split is the result. **Shape generalises** — the distributional claims hold on a corpus
+the model has never seen. **Correlation does not.** KeyRecs shows no tempo drift where Aalto
+shows +0.056, and the hold/latency correlation flips sign entirely.
+
+Neither is a stable human constant; both are properties of the **task**. Aalto participants
+transcribe whole sentences, so a rhythm builds and wanders. A fixed-phrase protocol restarts
+every trial and the drift never accumulates. So `TEMPO_SIGMA_SCALE` is right for prose and too
+high for short isolated fields — use `TEMPO_SIGMA_SCALE_FORM` there.
+
+Worth stating plainly: this check is what demoted one of our own claims from "measured" to
+"measured, for one task". That is the point of running it.
+
 ## Known gaps
 
 Stated plainly, because a library that hides these is worse than one that has them.
@@ -157,8 +185,8 @@ Stated plainly, because a library that hides these is worse than one that has th
 - **Scroll rests on 10 users**, and no `scrollend` fires where a real gesture produces one.
 - **Cross-modal correlation is assumed.** No public dataset records the same person typing and
   mousing, so `CROSS_MODAL_RHO` is an assumption isolated in one named constant.
-- **Validation is against the corpora we fitted to.** A held-out split is the first genuinely
-  external check and has not been done.
+- **Within-corpus validation is still circular** for anything the cross-dataset check below
+  does not cover. A held-out Aalto split would close the rest.
 - **Nothing here has been tested against a real detector.** Every number is
   distribution-matching, which is necessary and not sufficient.
 
